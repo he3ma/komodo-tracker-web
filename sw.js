@@ -1,4 +1,4 @@
-const CACHE_NAME = "komodo-tracker-pwa-20261126115117";
+const CACHE_NAME = "komodo-tracker-pwa-20261126133115";
 const ASSETS = [
   "./",
   "./index.html",

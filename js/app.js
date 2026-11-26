@@ -511,7 +511,7 @@ function renderMilk() {
   return `
     <div class="header-row" style="align-items:flex-start;">
       <div>
-        <h1 class="header-title">🍼 Milch</h1>
+        <h1 class="header-title">Milch</h1>
         <p class="header-sub">${esc(formatDateLongDe(ui.selectedMilkDateIso, currentToday))}</p>
         ${lastFeedAgo ? `<p style="margin:3px 0 0; font-size:12px; font-weight:700; color:var(--p1);">${esc(lastFeedAgo)}</p>` : ""}
       </div>
@@ -954,7 +954,7 @@ function renderTimePickerModalHtml() {
           <div style="display:flex; flex-direction:column; align-items:center; gap:6px;">
             <button id="btnMinPlus" class="btn btn-outline" style="padding:6px 18px;">+</button>
             <input id="tpMinInput" class="input" type="text" inputmode="numeric" maxlength="2" value="${pad2(m)}"
-              style="width:78px; height:58px; text-align:center; font-size:26px; font-weight:800;" />
+              style="width:78px; height:58px; text-align:center; font-size:26px; font-weight:800; background:var(--p1-soft); color:var(--p1-text);" />
             <button id="btnMinMinus" class="btn btn-outline" style="padding:6px 18px;">−</button>
             <span style="font-size:11px; color:var(--muted); font-weight:700;">Minute</span>
           </div>
