@@ -160,12 +160,36 @@ function parsePayloads(filesMap) {
   return list;
 }
 
+let lastAutoSyncAt = 0;
+
+function isAnyInputModalOpen() {
+  return Boolean(
+    ui.milkDialogOpen ||
+      ui.editorOpen ||
+      ui.calendarModal ||
+      ui.timePickerOpen ||
+      ui.pasteDialogOpen ||
+      ui.scannerOpen ||
+      ui.profileSelection
+  );
+}
+
+function autoSync() {
+  if (!isConnected() || !persisted.localUser) return;
+  const now = Date.now();
+  if (now - lastAutoSyncAt < 2000) return;
+  lastAutoSyncAt = now;
+  syncNow({ silent: true });
+}
+
 async function syncNow({ silent = false } = {}) {
   if (!isConnected() || syncInFlight) return;
   syncInFlight = true;
   ui.isSyncing = true;
   ui.syncError = null;
-  render();
+  if (!silent || !isAnyInputModalOpen()) {
+    render();
+  }
 
   try {
     const files = await GitHubGistApi.fetchAllUserFiles(persisted.token, persisted.gistId);
@@ -228,7 +252,9 @@ async function syncNow({ silent = false } = {}) {
   } finally {
     syncInFlight = false;
     ui.isSyncing = false;
-    render();
+    if (!silent || !isAnyInputModalOpen()) {
+      render();
+    }
   }
 }
 
@@ -933,6 +959,11 @@ function renderTimePickerModalHtml() {
             <span style="font-size:11px; color:var(--muted); font-weight:700;">Minute</span>
           </div>
         </div>
+        <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:6px;">
+          ${[0, 15, 30, 45].map((qm) => `
+            <button class="btn ${m === qm ? "btn-soft" : "btn-outline"}" data-tp-min="${qm}" style="padding:7px 4px; font-size:12px; ${m === qm ? "border-color:var(--p1); background:var(--p1-soft); color:var(--p1-text);" : ""}">:${pad2(qm)}</button>
+          `).join("")}
+        </div>
         <div style="display:flex; justify-content:flex-end; gap:8px;">
           <button id="btnTpDone" class="btn btn-primary">Übernehmen</button>
         </div>
@@ -979,7 +1010,7 @@ function renderModals() {
 
           <div style="display:flex; align-items:center; gap:10px; padding-top:4px;">
             <label for="milkAmountInput" style="font-size:16px; font-weight:800;">Menge:</label>
-            <input id="milkAmountInput" class="input" type="text" inputmode="numeric" maxlength="3" placeholder="150"
+            <input id="milkAmountInput" class="input" type="text" inputmode="numeric" maxlength="3" placeholder="170"
               value="${esc(d.amountInput)}" style="width:108px; text-align:center; font-size:18px; font-weight:800;" />
             <span style="font-size:16px; font-weight:700; color:var(--muted);">ml</span>
           </div>
@@ -1263,6 +1294,9 @@ function bindEvents() {
     btn.onclick = () => {
       ui.currentTab = btn.getAttribute("data-tab");
       render();
+      if (ui.currentTab === "MILK") {
+        autoSync();
+      }
     };
   });
 
@@ -1279,7 +1313,7 @@ function bindEvents() {
       ui.milkDraft = {
         dateIso: ui.selectedMilkDateIso,
         timeMinutes: nowTimeMinutes(),
-        amountInput: ""
+        amountInput: "170"
       };
       ui.milkDialogOpen = true;
       render();
@@ -1462,6 +1496,13 @@ function bindEvents() {
       }
     };
   }
+  document.querySelectorAll("[data-tp-min]").forEach((btn) => {
+    btn.onclick = () => {
+      const mVal = Number(btn.getAttribute("data-tp-min"));
+      ui.milkDraft.timeMinutes = Math.floor(ui.milkDraft.timeMinutes / 60) * 60 + mVal;
+      render();
+    };
+  });
   const tpDone = document.getElementById("btnTpDone");
   if (tpDone) tpDone.onclick = () => { ui.timePickerOpen = false; render(); };
 
@@ -1748,18 +1789,19 @@ if ("serviceWorker" in navigator) {
 }
 
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && isConnected()) {
-    syncNow({ silent: true });
+  if (document.visibilityState === "visible") {
+    autoSync();
   }
 });
 
+window.addEventListener("focus", () => autoSync());
+window.addEventListener("pageshow", () => autoSync());
+
 setInterval(() => {
-  if (ui.currentTab === "MILK" && persisted.localUser && !ui.milkDialogOpen && !ui.calendarModal && !ui.timePickerOpen) {
+  if (ui.currentTab === "MILK" && persisted.localUser && !isAnyInputModalOpen()) {
     render();
   }
 }, 30000);
 
 render();
-if (isConnected()) {
-  syncNow({ silent: true });
-}
+autoSync();
