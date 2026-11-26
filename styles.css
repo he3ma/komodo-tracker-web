@@ -362,6 +362,7 @@ html, body {
   color: #fff;
   border: none;
   border-radius: 18px;
+  min-width: 108px;
   height: 54px;
   padding: 0 18px;
   font-size: 14px;
@@ -369,6 +370,7 @@ html, body {
   font-family: inherit;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
   cursor: pointer;
@@ -420,6 +422,7 @@ html, body {
   color: #fff;
   border: none;
   border-radius: 18px;
+  min-width: 108px;
   height: 54px;
   padding: 0 18px;
   font-size: 14px;
@@ -427,6 +430,7 @@ html, body {
   font-family: inherit;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
   cursor: pointer;
