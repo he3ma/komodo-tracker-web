@@ -571,7 +571,7 @@ function renderMilk() {
       </button>
 
       <button id="btnAddMilk" class="milk-fab">
-        ${icon("plus", 17)}<span>Milch</span>
+        ${icon("plus", 18)}<span>Milch</span>
       </button>
     </div>
   `;

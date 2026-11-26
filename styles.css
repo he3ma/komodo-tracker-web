@@ -356,15 +356,17 @@ html, body {
 
 .fab {
   position: fixed;
-  right: max(18px, calc(50% - 260px + 18px));
+  right: max(16px, calc(50% - 260px + 16px));
   bottom: calc(78px + env(safe-area-inset-bottom));
   background: var(--p1);
   color: #fff;
   border: none;
   border-radius: 18px;
-  padding: 13px 18px;
+  height: 54px;
+  padding: 0 18px;
   font-size: 14px;
   font-weight: 800;
+  font-family: inherit;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -387,19 +389,20 @@ html, body {
   position: fixed;
   left: max(16px, calc(50% - 260px + 16px));
   right: max(16px, calc(50% - 260px + 16px));
-  bottom: calc(76px + env(safe-area-inset-bottom));
+  bottom: calc(78px + env(safe-area-inset-bottom));
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 10px;
   z-index: 20;
 }
 
 .milk-total-card {
   flex: 1;
+  min-height: 54px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 18px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -417,12 +420,14 @@ html, body {
   color: #fff;
   border: none;
   border-radius: 18px;
-  padding: 15px 18px;
+  height: 54px;
+  padding: 0 18px;
   font-size: 14px;
   font-weight: 800;
+  font-family: inherit;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
   cursor: pointer;
   flex-shrink: 0;
