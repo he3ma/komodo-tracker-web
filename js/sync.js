@@ -29,6 +29,25 @@ export function decodePairingCode(raw) {
   return { gistId, token };
 }
 
+function mergeListByTimestamp(localItems, remoteItems) {
+  const byId = new Map();
+  for (const item of localItems || []) {
+    byId.set(item.id, { ...item, isDeleted: Boolean(item.isDeleted) });
+  }
+  for (const rawRemote of remoteItems || []) {
+    const remoteItem = { ...rawRemote, isDeleted: Boolean(rawRemote.isDeleted) };
+    const current = byId.get(remoteItem.id);
+    const takeRemote =
+      !current ||
+      remoteItem.updatedAt > current.updatedAt ||
+      (remoteItem.updatedAt === current.updatedAt && remoteItem.isDeleted && !current.isDeleted);
+    if (takeRemote) {
+      byId.set(remoteItem.id, remoteItem);
+    }
+  }
+  return Array.from(byId.values()).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+}
+
 /**
  * Identisch zu TaskMergeEngine.kt auf Android:
  * Ermöglicht gemeinsames Arbeiten auf Android + Geschäfts-iPhone unter derselben userId.
@@ -36,9 +55,10 @@ export function decodePairingCode(raw) {
 export function mergeUserPayloads(local, remote) {
   if (!remote) {
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       user: local.user,
-      tasks: [...local.tasks]
+      tasks: [...(local.tasks || [])],
+      milkEntries: [...(local.milkEntries || [])]
     };
   }
 
@@ -47,30 +67,11 @@ export function mergeUserPayloads(local, remote) {
       ? remote.user
       : local.user;
 
-  const byId = new Map();
-  for (const task of local.tasks || []) {
-    byId.set(task.id, { ...task, isDeleted: Boolean(task.isDeleted) });
-  }
-  for (const rawRemote of remote.tasks || []) {
-    const remoteTask = { ...rawRemote, isDeleted: Boolean(rawRemote.isDeleted) };
-    const current = byId.get(remoteTask.id);
-    const takeRemote =
-      !current ||
-      remoteTask.updatedAt > current.updatedAt ||
-      (remoteTask.updatedAt === current.updatedAt && remoteTask.isDeleted && !current.isDeleted);
-    if (takeRemote) {
-      byId.set(remoteTask.id, remoteTask);
-    }
-  }
-
-  const mergedTasks = Array.from(byId.values()).sort(
-    (a, b) => (a.createdAt || 0) - (b.createdAt || 0)
-  );
-
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     user: mergedUser,
-    tasks: mergedTasks
+    tasks: mergeListByTimestamp(local.tasks, remote.tasks),
+    milkEntries: mergeListByTimestamp(local.milkEntries, remote.milkEntries)
   };
 }
 
@@ -79,10 +80,12 @@ export function payloadsEqual(a, b) {
   if (a.user?.id !== b.user?.id || a.user?.name !== b.user?.name || a.user?.updatedAt !== b.user?.updatedAt) {
     return false;
   }
-  if ((a.tasks?.length || 0) !== (b.tasks?.length || 0)) return false;
-  for (let i = 0; i < a.tasks.length; i++) {
-    const t1 = a.tasks[i];
-    const t2 = b.tasks[i];
+  const tasksA = a.tasks || [];
+  const tasksB = b.tasks || [];
+  if (tasksA.length !== tasksB.length) return false;
+  for (let i = 0; i < tasksA.length; i++) {
+    const t1 = tasksA[i];
+    const t2 = tasksB[i];
     if (
       t1.id !== t2.id ||
       t1.name !== t2.name ||
@@ -96,6 +99,25 @@ export function payloadsEqual(a, b) {
       return false;
     }
   }
+
+  const milkA = a.milkEntries || [];
+  const milkB = b.milkEntries || [];
+  if (milkA.length !== milkB.length) return false;
+  for (let i = 0; i < milkA.length; i++) {
+    const m1 = milkA[i];
+    const m2 = milkB[i];
+    if (
+      m1.id !== m2.id ||
+      m1.dateIso !== m2.dateIso ||
+      m1.timeMinutes !== m2.timeMinutes ||
+      m1.amountMl !== m2.amountMl ||
+      m1.updatedAt !== m2.updatedAt ||
+      Boolean(m1.isDeleted) !== Boolean(m2.isDeleted)
+    ) {
+      return false;
+    }
+  }
+
   return true;
 }
 

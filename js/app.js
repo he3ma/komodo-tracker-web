@@ -5,7 +5,18 @@ import {
   formatHoursAndMinutes,
   formatNumberDe,
   formatTaskRule,
-  parseLocalizedDouble
+  parseLocalizedDouble,
+  pad2,
+  todayIso,
+  nowTimeMinutes,
+  totalMlForDate,
+  sanitizeAmountInput,
+  parseAmountMl,
+  formatTimeDe,
+  formatDatePopupDe,
+  formatDateLongDe,
+  formatDateShortDe,
+  formatLastFeedAgo
 } from "./calculator.js";
 import {
   encodePairingCode,
@@ -27,8 +38,8 @@ function loadPersistedState() {
   }
 }
 
-function savePersistedState(persisted) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
+function savePersistedState(stateObj) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(stateObj));
 }
 
 function uuid() {
@@ -40,14 +51,19 @@ const persisted = loadPersistedState() || {
   localUser: null,
   partnerUsers: [],
   tasks: [],
+  milkEntries: [],
   themeMode: "LIGHT",
   gistId: null,
   token: null,
   lastSyncedAt: null
 };
+if (!Array.isArray(persisted.tasks)) persisted.tasks = [];
+if (!Array.isArray(persisted.milkEntries)) persisted.milkEntries = [];
+if (!Array.isArray(persisted.partnerUsers)) persisted.partnerUsers = [];
 
 const ui = {
-  currentTab: "MY_TASKS",
+  currentTab: "MILK",
+  selectedMilkDateIso: todayIso(),
   evalFilter: "ALL",
   evalSort: "WEEKLY_DESC",
   isSyncing: false,
@@ -55,13 +71,17 @@ const ui = {
   editorTaskId: null,
   editorOpen: false,
   draft: { name: "", durationValue: "30", durationUnit: DurationUnit.MINUTES, occurrences: "1", frequency: TaskFrequency.WEEK },
+  milkDialogOpen: false,
+  editingMilkId: null,
+  milkDraft: { dateIso: todayIso(), timeMinutes: nowTimeMinutes(), amountInput: "" },
+  calendarModal: null, // null | { target: 'DAY' | 'DRAFT', year: number, month: number }
+  timePickerOpen: false,
   pasteDialogOpen: false,
   pasteInput: "",
   pasteNameDraft: "",
   scannerOpen: false,
   scannerNameDraft: "",
   disconnectDialogOpen: false,
-  confirmDeleteTaskId: null,
   profileSelection: null,
   showToken: false,
   tokenInput: "",
@@ -109,8 +129,16 @@ function activeTasks() {
   return (persisted.tasks || []).filter((t) => !t.isDeleted);
 }
 
+function activeMilkEntries() {
+  return (persisted.milkEntries || []).filter((e) => !e.isDeleted);
+}
+
 function ownAllTasksIncludingDeleted(userId) {
   return (persisted.tasks || []).filter((t) => t.ownerId === userId);
+}
+
+function ownAllMilkIncludingDeleted(userId) {
+  return (persisted.milkEntries || []).filter((e) => e.ownerId === userId);
 }
 
 function userFileName(userId) {
@@ -146,9 +174,10 @@ async function syncNow({ silent = false } = {}) {
     if (persisted.localUser) {
       const localUser = persisted.localUser;
       const localPayload = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         user: localUser,
-        tasks: ownAllTasksIncludingDeleted(localUser.id)
+        tasks: ownAllTasksIncludingDeleted(localUser.id),
+        milkEntries: ownAllMilkIncludingDeleted(localUser.id)
       };
       const remoteOwn = payloads.find((p) => p.user.id === localUser.id) || null;
       const merged = mergeUserPayloads(localPayload, remoteOwn);
@@ -156,9 +185,14 @@ async function syncNow({ silent = false } = {}) {
       persisted.localUser = merged.user;
       ui.nameEditInput = merged.user.name;
 
-      // Replace local user's tasks with merged snapshot
       const nonLocalTasks = (persisted.tasks || []).filter((t) => t.ownerId !== merged.user.id);
       persisted.tasks = [...nonLocalTasks, ...merged.tasks.map((t) => ({ ...t, ownerId: merged.user.id }))];
+
+      const nonLocalMilk = (persisted.milkEntries || []).filter((e) => e.ownerId !== merged.user.id);
+      persisted.milkEntries = [
+        ...nonLocalMilk,
+        ...merged.milkEntries.map((e) => ({ ...e, ownerId: merged.user.id }))
+      ];
 
       if (!remoteOwn || !payloadsEqual(merged, remoteOwn)) {
         await GitHubGistApi.pushUserFile(
@@ -173,11 +207,19 @@ async function syncNow({ silent = false } = {}) {
     const localId = persisted.localUser?.id || "";
     const partnerPayloads = payloads.filter((p) => p.user.id !== localId);
     persisted.partnerUsers = partnerPayloads.map((p) => p.user);
+
     const ownTasks = (persisted.tasks || []).filter((t) => t.ownerId === localId);
     const partnerTasks = partnerPayloads.flatMap((p) =>
       (p.tasks || []).map((t) => ({ ...t, ownerId: p.user.id, isDeleted: Boolean(t.isDeleted) }))
     );
     persisted.tasks = [...ownTasks, ...partnerTasks];
+
+    const ownMilk = (persisted.milkEntries || []).filter((e) => e.ownerId === localId);
+    const partnerMilk = partnerPayloads.flatMap((p) =>
+      (p.milkEntries || []).map((e) => ({ ...e, ownerId: p.user.id, isDeleted: Boolean(e.isDeleted) }))
+    );
+    persisted.milkEntries = [...ownMilk, ...partnerMilk];
+
     persisted.lastSyncedAt = Date.now();
     persist();
   } catch (err) {
@@ -202,9 +244,10 @@ async function createPrivateGistFromToken(tokenInput) {
   render();
   try {
     const payload = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       user: persisted.localUser,
-      tasks: ownAllTasksIncludingDeleted(persisted.localUser.id)
+      tasks: ownAllTasksIncludingDeleted(persisted.localUser.id),
+      milkEntries: ownAllMilkIncludingDeleted(persisted.localUser.id)
     };
     const gistId = await GitHubGistApi.createPrivateGist(
       token,
@@ -299,13 +342,22 @@ async function completeUseExistingProfile(profilePayload) {
   persisted.localUser = { ...profilePayload.user };
   ui.nameEditInput = profilePayload.user.name;
 
-  const nonOwn = (persisted.tasks || []).filter((t) => t.ownerId !== profilePayload.user.id);
+  const nonOwnTasks = (persisted.tasks || []).filter((t) => t.ownerId !== profilePayload.user.id);
   const chosenTasks = (profilePayload.tasks || []).map((t) => ({
     ...t,
     ownerId: profilePayload.user.id,
     isDeleted: Boolean(t.isDeleted)
   }));
-  persisted.tasks = [...nonOwn, ...chosenTasks];
+  persisted.tasks = [...nonOwnTasks, ...chosenTasks];
+
+  const nonOwnMilk = (persisted.milkEntries || []).filter((e) => e.ownerId !== profilePayload.user.id);
+  const chosenMilk = (profilePayload.milkEntries || []).map((e) => ({
+    ...e,
+    ownerId: profilePayload.user.id,
+    isDeleted: Boolean(e.isDeleted)
+  }));
+  persisted.milkEntries = [...nonOwnMilk, ...chosenMilk];
+
   persist();
   await syncNow();
   showToast(`Profil „${profilePayload.user.name}“ aktiviert.`);
@@ -346,6 +398,9 @@ function icon(name, size = 18) {
     case "sun": return `<svg ${s}><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>`;
     case "moon": return `<svg ${s}><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>`;
     case "cloud": return `<svg ${s}><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>`;
+    case "cal": return `<svg ${s}><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>`;
+    case "clock": return `<svg ${s}><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>`;
+    case "chev": return `<svg ${s}><polyline points="9 18 15 12 9 6"/></svg>`;
     case "x": return `<svg ${s}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
     default: return "";
   }
@@ -398,6 +453,100 @@ function renderOnboarding() {
         </div>
         <button id="btnOnboardingPaste" class="btn btn-text" style="align-self:flex-end;">Oder Einladungs-Code einfügen</button>
       </div>
+    </div>
+  `;
+}
+
+function renderMilk() {
+  const me = persisted.localUser;
+  const partner = (persisted.partnerUsers || [])[0] || null;
+  const userMap = new Map();
+  if (me) userMap.set(me.id, me.name);
+  for (const p of persisted.partnerUsers || []) userMap.set(p.id, p.name);
+
+  const allMilk = activeMilkEntries();
+  const currentToday = todayIso();
+  const lastFeedAgo = formatLastFeedAgo(allMilk);
+
+  const dayEntries = allMilk
+    .filter((e) => e.dateIso === ui.selectedMilkDateIso)
+    .map((e) => {
+      const isMe = e.ownerId === me?.id;
+      return {
+        ...e,
+        isMe,
+        ownerName: userMap.get(e.ownerId) || (isMe ? "Ich" : partner?.name || "Partner")
+      };
+    })
+    .sort((a, b) => (b.timeMinutes - a.timeMinutes) || ((b.createdAt || 0) - (a.createdAt || 0)));
+
+  const dayTotal = totalMlForDate(allMilk, ui.selectedMilkDateIso);
+
+  return `
+    <div class="header-row" style="align-items:flex-start;">
+      <div>
+        <h1 class="header-title">🍼 Milch</h1>
+        <p class="header-sub">${esc(formatDateLongDe(ui.selectedMilkDateIso, currentToday))}</p>
+        ${lastFeedAgo ? `<p style="margin:3px 0 0; font-size:12px; font-weight:700; color:var(--p1);">${esc(lastFeedAgo)}</p>` : ""}
+      </div>
+      ${isConnected()
+        ? `<button id="btnMilkSync" class="icon-btn" title="Jetzt synchronisieren">${icon("sync", 16)}</button>`
+        : `<button id="btnMilkSetup" class="btn btn-text">Sync einrichten</button>`
+      }
+    </div>
+
+    <div class="main-scroll stack-sm" style="padding-bottom:110px;">
+      ${dayEntries.length === 0 ? `
+        <div class="card" style="text-align:center; padding:32px 20px; margin-top:20px;">
+          <div style="font-size:34px; margin-bottom:8px;">🍼</div>
+          <div style="font-size:16px; font-weight:700;">Keine Einträge für diesen Tag</div>
+          <p style="font-size:13px; color:var(--muted); margin:6px 0 0;">
+            Tippe unten rechts auf „+ Milch“, um ein Fläschchen einzutragen.
+          </p>
+        </div>
+      ` : dayEntries.map((e) => `
+        <div class="task-card" data-milk-entry="${esc(e.id)}" data-is-me="${e.isMe ? "1" : "0"}" data-owner-name="${esc(e.ownerName)}">
+          <div style="display:flex; align-items:center; gap:12px; min-width:0; flex:1;">
+            <div style="width:40px; height:40px; border-radius:12px; background:${e.isMe ? "var(--p1-soft)" : "var(--p2-soft)"}; display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0;">
+              🍼
+            </div>
+            <div style="min-width:0; flex:1;">
+              <div style="display:flex; align-items:center; gap:6px;">
+                <span style="font-size:14px; font-weight:800; font-variant-numeric:tabular-nums;">${esc(formatTimeDe(e.timeMinutes))}</span>
+                <span class="owner-badge ${e.isMe ? "p1" : "p2"}">${esc(e.ownerName)}</span>
+              </div>
+              <div class="task-rule">${e.isMe ? "Antippen zum Bearbeiten" : "Vom Partner eingetragen"}</div>
+            </div>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
+            <span class="task-hours" style="font-size:15px; color:${e.isMe ? "var(--p1)" : "var(--p2)"};">${e.amountMl} ml</span>
+            <span style="color:var(--muted);">${icon(e.isMe ? "edit" : "lock", 15)}</span>
+          </div>
+        </div>
+      `).join("")}
+    </div>
+
+    <div class="milk-bottom-bar">
+      <button id="btnMilkDayPicker" class="milk-total-card">
+        <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+          <div style="width:36px; height:36px; border-radius:10px; background:var(--p1-soft); color:var(--p1); display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+            ${icon("cal", 17)}
+          </div>
+          <div style="min-width:0;">
+            <div style="font-size:11px; color:var(--muted); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+              ${esc(formatDateShortDe(ui.selectedMilkDateIso, currentToday))} · ${dayEntries.length}×
+            </div>
+            <div style="font-size:16px; font-weight:800; color:var(--p1); font-variant-numeric:tabular-nums;">
+              ${dayTotal} ml
+            </div>
+          </div>
+        </div>
+        <span style="color:var(--muted); flex-shrink:0;">${icon("chev", 16)}</span>
+      </button>
+
+      <button id="btnAddMilk" class="milk-fab">
+        ${icon("plus", 17)}<span>Milch</span>
+      </button>
     </div>
   `;
 }
@@ -470,7 +619,7 @@ function renderEvaluation() {
   const mePct = total > 0 ? Math.round((meSum / total) * 100) : 50;
   const partnerPct = 100 - mePct;
 
-  let filtered = enriched.filter((t) => {
+  const filtered = enriched.filter((t) => {
     if (ui.evalFilter === "MINE") return t.isMe;
     if (ui.evalFilter === "PARTNER") return !t.isMe;
     return true;
@@ -679,15 +828,18 @@ function renderSettingsSync() {
 
 function renderNav() {
   const tabs = [
-    { id: "MY_TASKS", label: "Meine Tasks", iconName: "list" },
+    { id: "MILK", label: "Milch", emoji: "🍼" },
+    { id: "MY_TASKS", label: "Tasks", iconName: "list" },
     { id: "EVALUATION", label: "Auswertung", iconName: "chart" },
-    { id: "PROFILE_SYNC", label: "Profil & Sync", iconName: "user" }
+    { id: "PROFILE_SYNC", label: "Profil", iconName: "user" }
   ];
   return `
     <nav class="bottom-nav">
       ${tabs.map((t) => `
         <button class="nav-item ${ui.currentTab === t.id ? "active" : ""}" data-tab="${t.id}">
-          <span class="nav-pill">${icon(t.iconName, 18)}</span>
+          <span class="nav-pill" style="font-size:17px; line-height:1;">
+            ${t.emoji ? t.emoji : icon(t.iconName, 17)}
+          </span>
           <span class="nav-label">${t.label}</span>
         </button>
       `).join("")}
@@ -695,8 +847,160 @@ function renderNav() {
   `;
 }
 
+const MONTHS_DE = [
+  "Januar", "Februar", "März", "April", "Mai", "Juni",
+  "Juli", "August", "September", "Oktober", "November", "Dezember"
+];
+
+function renderCalendarModalHtml(cal) {
+  const activeIso = cal.target === "DAY" ? ui.selectedMilkDateIso : ui.milkDraft.dateIso;
+  const currentToday = todayIso();
+  const daysWithEntries = new Set(activeMilkEntries().map((e) => e.dateIso));
+  const firstDay = new Date(cal.year, cal.month, 1);
+  const startOffset = (firstDay.getDay() + 6) % 7; // Montag = 0
+  const daysInMonth = new Date(cal.year, cal.month + 1, 0).getDate();
+
+  const cells = [];
+  for (let i = 0; i < startOffset; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  return `
+    <div class="modal-backdrop center" style="z-index:60;">
+      <div class="dialog stack-md">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div>
+            <div style="font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase;">
+              ${cal.target === "DAY" ? "Tag für Gesamtmenge wählen" : "Datum auswählen"}
+            </div>
+            <div style="font-size:16px; font-weight:800; margin-top:2px;">${MONTHS_DE[cal.month]} ${cal.year}</div>
+          </div>
+          <div style="display:flex; gap:4px;">
+            <button id="btnCalPrev" class="icon-btn" style="width:32px; height:32px;">‹</button>
+            <button id="btnCalNext" class="icon-btn" style="width:32px; height:32px;">›</button>
+          </div>
+        </div>
+
+        <div class="cal-grid" style="font-size:11px; font-weight:700; color:var(--muted);">
+          <span>Mo</span><span>Di</span><span>Mi</span><span>Do</span><span>Fr</span><span>Sa</span><span>So</span>
+        </div>
+
+        <div class="cal-grid">
+          ${cells.map((day) => {
+            if (!day) return `<div></div>`;
+            const iso = `${cal.year}-${pad2(cal.month + 1)}-${pad2(day)}`;
+            const isSel = iso === activeIso;
+            const isToday = iso === currentToday;
+            const hasDot = daysWithEntries.has(iso);
+            return `
+              <button class="cal-cell ${isSel ? "selected" : ""} ${isToday ? "today" : ""}" data-cal-iso="${iso}">
+                <span>${day}</span>
+                ${hasDot ? `<span class="cal-dot"></span>` : ""}
+              </button>
+            `;
+          }).join("")}
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; padding-top:4px;">
+          <button id="btnCalToday" class="btn btn-text">Heute</button>
+          <button id="btnCalClose" class="btn btn-text" style="color:var(--muted);">Abbrechen</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderTimePickerModalHtml() {
+  const h = Math.floor(ui.milkDraft.timeMinutes / 60);
+  const m = ui.milkDraft.timeMinutes % 60;
+  return `
+    <div class="modal-backdrop center" style="z-index:60;">
+      <div class="dialog stack-md">
+        <div style="font-size:17px; font-weight:800;">Uhrzeit auswählen</div>
+        <div style="display:flex; justify-content:center; align-items:center; gap:12px;">
+          <div style="display:flex; flex-direction:column; align-items:center; gap:6px;">
+            <button id="btnHourPlus" class="btn btn-outline" style="padding:6px 18px;">+</button>
+            <input id="tpHourInput" class="input" type="text" inputmode="numeric" maxlength="2" value="${pad2(h)}"
+              style="width:78px; height:58px; text-align:center; font-size:26px; font-weight:800; background:var(--p1-soft); color:var(--p1-text);" />
+            <button id="btnHourMinus" class="btn btn-outline" style="padding:6px 18px;">−</button>
+            <span style="font-size:11px; color:var(--muted); font-weight:700;">Stunde</span>
+          </div>
+          <span style="font-size:28px; font-weight:800; padding-bottom:22px;">:</span>
+          <div style="display:flex; flex-direction:column; align-items:center; gap:6px;">
+            <button id="btnMinPlus" class="btn btn-outline" style="padding:6px 18px;">+</button>
+            <input id="tpMinInput" class="input" type="text" inputmode="numeric" maxlength="2" value="${pad2(m)}"
+              style="width:78px; height:58px; text-align:center; font-size:26px; font-weight:800;" />
+            <button id="btnMinMinus" class="btn btn-outline" style="padding:6px 18px;">−</button>
+            <span style="font-size:11px; color:var(--muted); font-weight:700;">Minute</span>
+          </div>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:8px;">
+          <button id="btnTpDone" class="btn btn-primary">Übernehmen</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderModals() {
   const parts = [];
+
+  if (ui.milkDialogOpen) {
+    const d = ui.milkDraft;
+    const valid = parseAmountMl(d.amountInput) !== null;
+    parts.push(`
+      <div class="modal-backdrop center" id="milkBackdrop">
+        <div class="dialog stack-md">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div style="font-size:19px; font-weight:800;">${ui.editingMilkId ? "Milch bearbeiten" : "Milch eintragen"}</div>
+            <button id="btnCloseMilkDialog" class="icon-btn" style="width:32px; height:32px; color:var(--muted);">${icon("x", 16)}</button>
+          </div>
+
+          <button id="btnMilkPickDate" class="task-card" style="width:100%; background:var(--bg);">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <span style="color:var(--p1);">${icon("cal", 18)}</span>
+              <div style="text-align:left;">
+                <div style="font-size:11px; color:var(--muted); font-weight:600;">Datum</div>
+                <div style="font-size:14px; font-weight:700;">${esc(formatDatePopupDe(d.dateIso))}</div>
+              </div>
+            </div>
+            <span style="font-size:12px; font-weight:700; color:var(--p1);">Ändern</span>
+          </button>
+
+          <button id="btnMilkPickTime" class="task-card" style="width:100%; background:var(--bg);">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <span style="color:var(--p1);">${icon("clock", 18)}</span>
+              <div style="text-align:left;">
+                <div style="font-size:11px; color:var(--muted); font-weight:600;">Uhrzeit</div>
+                <div style="font-size:14px; font-weight:700; font-variant-numeric:tabular-nums;">${esc(formatTimeDe(d.timeMinutes))}</div>
+              </div>
+            </div>
+            <span style="font-size:12px; font-weight:700; color:var(--p1);">Ändern</span>
+          </button>
+
+          <div style="display:flex; align-items:center; gap:10px; padding-top:4px;">
+            <label for="milkAmountInput" style="font-size:16px; font-weight:800;">Menge:</label>
+            <input id="milkAmountInput" class="input" type="text" inputmode="numeric" maxlength="3" placeholder="150"
+              value="${esc(d.amountInput)}" style="width:108px; text-align:center; font-size:18px; font-weight:800;" />
+            <span style="font-size:16px; font-weight:700; color:var(--muted);">ml</span>
+          </div>
+
+          <div style="display:flex; justify-content:flex-end; align-items:center; gap:8px; padding-top:4px;">
+            ${ui.editingMilkId ? `<button id="btnDeleteMilk" class="btn btn-text" style="color:var(--p2); margin-right:auto;">Löschen</button>` : ""}
+            <button id="btnCancelMilk" class="btn btn-text" style="color:var(--muted);">Abbrechen</button>
+            <button id="btnSaveMilk" class="btn btn-primary" ${valid ? "" : "disabled"}>Speichern</button>
+          </div>
+        </div>
+      </div>
+    `);
+  }
+
+  if (ui.calendarModal) {
+    parts.push(renderCalendarModalHtml(ui.calendarModal));
+  }
+
+  if (ui.timePickerOpen) {
+    parts.push(renderTimePickerModalHtml());
+  }
 
   if (ui.editorOpen) {
     const d = ui.draft;
@@ -801,12 +1105,13 @@ function renderModals() {
           </p>
           <div class="stack-sm">
             ${sel.existingProfiles.map((p, idx) => {
-              const count = (p.tasks || []).filter((t) => !t.isDeleted).length;
+              const taskCount = (p.tasks || []).filter((t) => !t.isDeleted).length;
+              const milkCount = (p.milkEntries || []).filter((e) => !e.isDeleted).length;
               return `
                 <button class="task-card" data-pick-profile="${idx}" style="width:100%; text-align:left;">
                   <div>
                     <div class="task-title">${esc(p.user.name)}</div>
-                    <div class="task-rule">${count} Tasks · Profil mitnutzen</div>
+                    <div class="task-rule">${taskCount} Tasks · ${milkCount} Fläschchen</div>
                   </div>
                   <span style="font-size:13px; font-weight:700; color:var(--p1);">Wählen</span>
                 </button>
@@ -832,7 +1137,7 @@ function renderModals() {
         <div class="dialog stack-md">
           <div style="font-size:17px; font-weight:800;">Sync trennen?</div>
           <p style="font-size:13px; color:var(--muted); margin:0;">
-            Deine lokalen Tasks bleiben gespeichert, aber die Verbindung zum GitHub Gist wird von diesem iPhone entfernt.
+            Deine lokalen Einträge bleiben gespeichert, aber die Verbindung zum GitHub Gist wird von diesem iPhone entfernt.
           </p>
           <div style="display:flex; justify-content:flex-end; gap:8px;">
             <button id="btnDiscCancel" class="btn btn-text" style="color:var(--muted);">Abbrechen</button>
@@ -854,10 +1159,10 @@ function renderQrCanvas() {
   qr.addData(code);
   qr.make();
   box.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2 });
-  const svg = box.querySelector("svg");
-  if (svg) {
-    svg.setAttribute("width", "176");
-    svg.setAttribute("height", "176");
+  const svgEl = box.querySelector("svg");
+  if (svgEl) {
+    svgEl.setAttribute("width", "176");
+    svgEl.setAttribute("height", "176");
   }
 }
 
@@ -921,16 +1226,21 @@ async function startScanner(nameDraft = "") {
   }
 }
 
+function openCalendarFor(target, baseIso) {
+  const parts = /^(\d{4})-(\d{2})/.exec(baseIso || todayIso());
+  const y = parts ? Number(parts[1]) : new Date().getFullYear();
+  const m = parts ? Number(parts[2]) - 1 : new Date().getMonth();
+  ui.calendarModal = { target, year: y, month: m };
+  render();
+}
+
 function bindEvents() {
   // Onboarding
   const startBtn = document.getElementById("btnOnboardingStart");
   if (startBtn) {
     startBtn.onclick = () => {
       const name = document.getElementById("onboardingName")?.value.trim();
-      if (!name) {
-        showToast("Bitte gib deinen Namen ein.");
-        return;
-      }
+      if (!name) return showToast("Bitte gib deinen Namen ein.");
       persisted.localUser = { id: uuid(), name, updatedAt: Date.now() };
       ui.nameEditInput = name;
       persist();
@@ -938,9 +1248,7 @@ function bindEvents() {
     };
   }
   const onbScan = document.getElementById("btnOnboardingScan");
-  if (onbScan) {
-    onbScan.onclick = () => startScanner(document.getElementById("onboardingName")?.value || "");
-  }
+  if (onbScan) onbScan.onclick = () => startScanner(document.getElementById("onboardingName")?.value || "");
   const onbPaste = document.getElementById("btnOnboardingPaste");
   if (onbPaste) {
     onbPaste.onclick = () => {
@@ -957,6 +1265,205 @@ function bindEvents() {
       render();
     };
   });
+
+  // Milk Tab
+  const milkSync = document.getElementById("btnMilkSync");
+  if (milkSync) milkSync.onclick = () => syncNow();
+  const milkSetup = document.getElementById("btnMilkSetup");
+  if (milkSetup) milkSetup.onclick = () => { ui.currentTab = "PROFILE_SYNC"; render(); };
+
+  const addMilkBtn = document.getElementById("btnAddMilk");
+  if (addMilkBtn) {
+    addMilkBtn.onclick = () => {
+      ui.editingMilkId = null;
+      ui.milkDraft = {
+        dateIso: ui.selectedMilkDateIso,
+        timeMinutes: nowTimeMinutes(),
+        amountInput: ""
+      };
+      ui.milkDialogOpen = true;
+      render();
+    };
+  }
+
+  const dayPickerBtn = document.getElementById("btnMilkDayPicker");
+  if (dayPickerBtn) {
+    dayPickerBtn.onclick = () => openCalendarFor("DAY", ui.selectedMilkDateIso);
+  }
+
+  document.querySelectorAll("[data-milk-entry]").forEach((card) => {
+    card.onclick = () => {
+      if (card.getAttribute("data-is-me") === "1") {
+        const id = card.getAttribute("data-milk-entry");
+        const entry = activeMilkEntries().find((e) => e.id === id);
+        if (!entry) return;
+        ui.editingMilkId = entry.id;
+        ui.milkDraft = {
+          dateIso: entry.dateIso,
+          timeMinutes: entry.timeMinutes,
+          amountInput: String(entry.amountMl)
+        };
+        ui.milkDialogOpen = true;
+        render();
+      } else {
+        showToast(`Einträge von ${card.getAttribute("data-owner-name")} sind schreibgeschützt.`);
+      }
+    };
+  });
+
+  // Milk Entry Dialog
+  const closeMilk = document.getElementById("btnCloseMilkDialog");
+  if (closeMilk) closeMilk.onclick = () => { ui.milkDialogOpen = false; render(); };
+  const cancelMilk = document.getElementById("btnCancelMilk");
+  if (cancelMilk) cancelMilk.onclick = () => { ui.milkDialogOpen = false; render(); };
+  const milkBackdrop = document.getElementById("milkBackdrop");
+  if (milkBackdrop) {
+    milkBackdrop.onclick = (e) => {
+      if (e.target === milkBackdrop) { ui.milkDialogOpen = false; render(); }
+    };
+  }
+  const pickMilkDate = document.getElementById("btnMilkPickDate");
+  if (pickMilkDate) pickMilkDate.onclick = () => openCalendarFor("DRAFT", ui.milkDraft.dateIso);
+  const pickMilkTime = document.getElementById("btnMilkPickTime");
+  if (pickMilkTime) pickMilkTime.onclick = () => { ui.timePickerOpen = true; render(); };
+
+  const milkAmountEl = document.getElementById("milkAmountInput");
+  if (milkAmountEl) {
+    milkAmountEl.oninput = (e) => {
+      const cleaned = sanitizeAmountInput(e.target.value);
+      e.target.value = cleaned;
+      ui.milkDraft.amountInput = cleaned;
+      const saveBtn = document.getElementById("btnSaveMilk");
+      if (saveBtn) saveBtn.disabled = parseAmountMl(cleaned) === null;
+    };
+  }
+
+  const saveMilkBtn = document.getElementById("btnSaveMilk");
+  if (saveMilkBtn) {
+    saveMilkBtn.onclick = () => {
+      const amountMl = parseAmountMl(ui.milkDraft.amountInput);
+      if (amountMl === null) return showToast("Bitte gib eine Menge zwischen 1 und 999 ml ein.");
+      const now = Date.now();
+      if (ui.editingMilkId) {
+        persisted.milkEntries = (persisted.milkEntries || []).map((e) =>
+          e.id === ui.editingMilkId && e.ownerId === persisted.localUser.id
+            ? { ...e, dateIso: ui.milkDraft.dateIso, timeMinutes: ui.milkDraft.timeMinutes, amountMl, updatedAt: now, isDeleted: false }
+            : e
+        );
+      } else {
+        persisted.milkEntries.push({
+          id: uuid(),
+          ownerId: persisted.localUser.id,
+          dateIso: ui.milkDraft.dateIso,
+          timeMinutes: ui.milkDraft.timeMinutes,
+          amountMl,
+          createdAt: now,
+          updatedAt: now,
+          isDeleted: false
+        });
+      }
+      ui.selectedMilkDateIso = ui.milkDraft.dateIso;
+      ui.milkDialogOpen = false;
+      persist();
+      render();
+      syncNow({ silent: true });
+    };
+  }
+
+  const delMilkBtn = document.getElementById("btnDeleteMilk");
+  if (delMilkBtn) {
+    delMilkBtn.onclick = () => {
+      const now = Date.now();
+      persisted.milkEntries = (persisted.milkEntries || []).map((e) =>
+        e.id === ui.editingMilkId && e.ownerId === persisted.localUser.id
+          ? { ...e, isDeleted: true, updatedAt: now }
+          : e
+      );
+      ui.milkDialogOpen = false;
+      persist();
+      showToast("Milcheintrag gelöscht.");
+      render();
+      syncNow({ silent: true });
+    };
+  }
+
+  // Calendar Modal
+  const calPrev = document.getElementById("btnCalPrev");
+  if (calPrev) {
+    calPrev.onclick = () => {
+      ui.calendarModal.month -= 1;
+      if (ui.calendarModal.month < 0) { ui.calendarModal.month = 11; ui.calendarModal.year -= 1; }
+      render();
+    };
+  }
+  const calNext = document.getElementById("btnCalNext");
+  if (calNext) {
+    calNext.onclick = () => {
+      ui.calendarModal.month += 1;
+      if (ui.calendarModal.month > 11) { ui.calendarModal.month = 0; ui.calendarModal.year += 1; }
+      render();
+    };
+  }
+  const calClose = document.getElementById("btnCalClose");
+  if (calClose) calClose.onclick = () => { ui.calendarModal = null; render(); };
+  const calToday = document.getElementById("btnCalToday");
+  if (calToday) {
+    calToday.onclick = () => {
+      const today = todayIso();
+      if (ui.calendarModal?.target === "DAY") ui.selectedMilkDateIso = today;
+      else ui.milkDraft.dateIso = today;
+      ui.calendarModal = null;
+      render();
+    };
+  }
+  document.querySelectorAll("[data-cal-iso]").forEach((btn) => {
+    btn.onclick = () => {
+      const iso = btn.getAttribute("data-cal-iso");
+      if (ui.calendarModal?.target === "DAY") ui.selectedMilkDateIso = iso;
+      else ui.milkDraft.dateIso = iso;
+      ui.calendarModal = null;
+      render();
+    };
+  });
+
+  // TimePicker Modal
+  const stepTp = (deltaH, deltaM) => {
+    let h = Math.floor(ui.milkDraft.timeMinutes / 60);
+    let m = ui.milkDraft.timeMinutes % 60;
+    h = (h + deltaH + 24) % 24;
+    m = (m + deltaM + 60) % 60;
+    ui.milkDraft.timeMinutes = h * 60 + m;
+    render();
+  };
+  const hPlus = document.getElementById("btnHourPlus");
+  if (hPlus) hPlus.onclick = () => stepTp(1, 0);
+  const hMinus = document.getElementById("btnHourMinus");
+  if (hMinus) hMinus.onclick = () => stepTp(-1, 0);
+  const mPlus = document.getElementById("btnMinPlus");
+  if (mPlus) mPlus.onclick = () => stepTp(0, 1);
+  const mMinus = document.getElementById("btnMinMinus");
+  if (mMinus) mMinus.onclick = () => stepTp(0, -1);
+
+  const tpHour = document.getElementById("tpHourInput");
+  if (tpHour) {
+    tpHour.oninput = (e) => {
+      const n = Number(e.target.value.replace(/[^0-9]/g, ""));
+      if (Number.isInteger(n) && n >= 0 && n <= 23) {
+        ui.milkDraft.timeMinutes = n * 60 + (ui.milkDraft.timeMinutes % 60);
+      }
+    };
+  }
+  const tpMin = document.getElementById("tpMinInput");
+  if (tpMin) {
+    tpMin.oninput = (e) => {
+      const n = Number(e.target.value.replace(/[^0-9]/g, ""));
+      if (Number.isInteger(n) && n >= 0 && n <= 59) {
+        ui.milkDraft.timeMinutes = Math.floor(ui.milkDraft.timeMinutes / 60) * 60 + n;
+      }
+    };
+  }
+  const tpDone = document.getElementById("btnTpDone");
+  if (tpDone) tpDone.onclick = () => { ui.timePickerOpen = false; render(); };
 
   // My Tasks
   const fab = document.getElementById("fabAddTask");
@@ -1076,7 +1583,7 @@ function bindEvents() {
   const discBtn = document.getElementById("btnDisconnect");
   if (discBtn) discBtn.onclick = () => { ui.disconnectDialogOpen = true; render(); };
 
-  // Editor Modal
+  // Task Editor Modal
   const closeEd = document.getElementById("btnCloseEditor");
   if (closeEd) closeEd.onclick = () => { ui.editorOpen = false; render(); };
   const edBackdrop = document.getElementById("editorBackdrop");
@@ -1222,7 +1729,8 @@ function render() {
     app.innerHTML = renderOnboarding();
   } else {
     let screen = "";
-    if (ui.currentTab === "MY_TASKS") screen = renderMyTasks();
+    if (ui.currentTab === "MILK") screen = renderMilk();
+    else if (ui.currentTab === "MY_TASKS") screen = renderMyTasks();
     else if (ui.currentTab === "EVALUATION") screen = renderEvaluation();
     else screen = renderSettingsSync();
     app.innerHTML = screen + renderNav();
@@ -1244,6 +1752,12 @@ document.addEventListener("visibilitychange", () => {
     syncNow({ silent: true });
   }
 });
+
+setInterval(() => {
+  if (ui.currentTab === "MILK" && persisted.localUser && !ui.milkDialogOpen && !ui.calendarModal && !ui.timePickerOpen) {
+    render();
+  }
+}, 30000);
 
 render();
 if (isConnected()) {

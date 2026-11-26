@@ -378,10 +378,91 @@ html, body {
   background: var(--nav-bg);
   border-top: 1px solid var(--border);
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  padding: 8px 6px calc(10px + env(safe-area-inset-bottom));
+  grid-template-columns: repeat(4, 1fr);
+  padding: 8px 4px calc(10px + env(safe-area-inset-bottom));
   flex-shrink: 0;
 }
+
+.milk-bottom-bar {
+  position: fixed;
+  left: max(16px, calc(50% - 260px + 16px));
+  right: max(16px, calc(50% - 260px + 16px));
+  bottom: calc(76px + env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 20;
+}
+
+.milk-total-card {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.14);
+  cursor: pointer;
+  color: var(--text);
+  font-family: inherit;
+  text-align: left;
+  min-width: 0;
+}
+
+.milk-fab {
+  background: var(--p1);
+  color: #fff;
+  border: none;
+  border-radius: 18px;
+  padding: 15px 18px;
+  font-size: 14px;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+[data-theme="dark"] .milk-fab { color: #0A241E; }
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  text-align: center;
+}
+
+.cal-cell {
+  height: 36px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-family: inherit;
+}
+.cal-cell.selected { background: var(--p1); color: #fff; }
+[data-theme="dark"] .cal-cell.selected { color: #0A241E; }
+.cal-cell.today:not(.selected) { border: 1px solid var(--p1); color: var(--p1); }
+.cal-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--p2);
+  margin-top: 1px;
+}
+.cal-cell.selected .cal-dot { background: #fff; }
+[data-theme="dark"] .cal-cell.selected .cal-dot { background: #0A241E; }
 
 .nav-item {
   border: none;
