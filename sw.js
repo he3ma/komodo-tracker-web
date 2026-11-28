@@ -1,4 +1,4 @@
-const CACHE_NAME = "komodo-tracker-pwa-20261126215025";
+const CACHE_NAME = "komodo-tracker-pwa-20261128124749";
 const ASSETS = [
   "./",
   "./index.html",
@@ -11,7 +11,9 @@ const ASSETS = [
   "./vendor/qrcode.js",
   "./icons/icon-180.png",
   "./icons/icon-192.png",
-  "./icons/icon-512.png"
+  "./icons/icon-512.png",
+  "./icons/favicon-32.png",
+  "./icons/favicon-192.png"
 ];
 
 self.addEventListener("install", (event) => {
